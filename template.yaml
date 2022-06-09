@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "This template is used to create a simple web app infra."
+
+Parameters:
+# fetching the latest Amazon Linux 2 AMI
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  
+  KeyName:
+    Description: Key Pair for EC2
+    Type: 'AWS::EC2::KeyPair::KeyName'
+
+Resources:
+# create a custom VPC
+  customVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: cfn-custom-vpc
+
+# create an IGW
+  customIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cfn-igw
+
+# attach IGW to the VPC
+  customVPCTOIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref customVPC
+      InternetGatewayId: !Ref customIGW
+
+# create public subnets
+  publicSubneta:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref customVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cfn-pub-sub-a
+
+  publicSubnetb:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref customVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: "us-east-1b"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cfn-pub-sub-b
+
+# create public route table
+  publicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref customVPC
+      Tags:
+        - Key: Name
+          Value: public-RT
+
+# create a public route to IGW
+  publicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref publicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref customIGW
+
+# associate public route table to public subnet
+  publicRTAssociationToPubSubA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref publicSubneta
+      RouteTableId: !Ref publicRT
+
+  publicRTAssociationToPubSubB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref publicSubnetb
+      RouteTableId: !Ref publicRT
+
+# load balancer and target group
+  ALBSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "security group for ALB"
+      GroupName: "cfn-ALB-SG"
+      VpcId: !Ref customVPC
+      SecurityGroupIngress: 
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          IpProtocol: "tcp"
+          ToPort: 80
+      Tags: 
+        - Key: Name
+          Value: "cfn-ALB-SG"
+
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      Targets:
+      - Id: !Ref EC2Instance1
+        Port: 80
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref customVPC
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+      - !Ref publicSubneta
+      - !Ref publicSubnetb
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+      Tags: 
+      - Key: Name
+        Value: "cfn-ALB"
+
+
+#EC2 Instance - SG
+  EC2Instance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      SecurityGroupIds: [!Ref EC2SecurityGroup]
+      SubnetId: !Ref publicSubneta
+      KeyName: !Ref KeyName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "<h1>Hello from Region us-east-1a</h1>" > /var/www/html/index.html
+      Tags: 
+      - Key: Name
+        Value: "cfn-web-server"
+
+
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "web server SG"
+      VpcId: !Ref customVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags: 
+      - Key: Name
+        Value: "cfn-web-server-sg"
+  
+  webServerSGIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt EC2SecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
