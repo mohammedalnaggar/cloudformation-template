@@ -152,7 +152,7 @@ Resources:
         Value: "cfn-ALB"
 
 
-#EC2 Instance - SG
+#EC2 Instance & SG
   EC2Instance1:
     Type: AWS::EC2::Instance
     Properties:
@@ -164,16 +164,13 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
-          yum update -y
-          yum install -y httpd
-          systemctl start httpd
-          systemctl enable httpd
-          echo "<h1>Hello from Region us-east-1a</h1>" > /var/www/html/index.html
+          sudo yum update -y
+          sudo amazon-linux-extras install nginx1 -y 
+          sudo systemctl enable nginx
+          sudo systemctl start nginx
       Tags: 
       - Key: Name
         Value: "cfn-web-server"
-
-
 
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -188,7 +185,7 @@ Resources:
       Tags: 
       - Key: Name
         Value: "cfn-web-server-sg"
-  
+
   webServerSGIngress:
     Type: 'AWS::EC2::SecurityGroupIngress'
     Properties:
@@ -197,3 +194,10 @@ Resources:
       FromPort: 80
       ToPort: 80
       SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+
+
+# providing the ALB DNS as an output
+Outputs:
+  ALBDNS:
+    Description: This is the ALB DNS 
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
